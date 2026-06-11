@@ -30,13 +30,12 @@ const SORT_FIELDS_BY_DATE = [
 requestList(GOODREADS_USER_ID, SHELF)
   .then(async (data) => {
     try {
-      // check if there are any books in the shelf
-      if (!data || !data.rss || !data.rss.channel || !data.rss.channel.item) {
-        return;
+      if (!data || !data.rss || !data.rss.channel) {
+        throw new Error("Goodreads response did not contain a valid RSS feed.");
       }
-      const items = Array.isArray(data.rss.channel.item)
-        ? data.rss.channel.item
-        : [data.rss.channel.item];
+      // check if there are any books in the shelf
+      const rssItems = data.rss.channel.item || [];
+      const items = Array.isArray(rssItems) ? rssItems : [rssItems];
       const sortedBooks = sortBy(items, SORT_BY_FIELDS);
       const books = sortedBooks.slice(0, MAX_BOOKS_COUNT);
       const readme = fs.readFileSync(README_FILE_PATH, "utf8");
@@ -75,20 +74,43 @@ requestList(GOODREADS_USER_ID, SHELF)
 
 function requestList(userId, shelf) {
   return new Promise((resolve, reject) => {
-    https
-      .request(
-        {
-          host: "www.goodreads.com",
-          path: `/review/list_rss/${userId}?shelf=${shelf}`
-        },
-        (response) => {
-          let data = "";
-          response.on("data", (chunk) => (data += chunk));
-          response.on("end", () => resolve(xmlParser.parse(data)));
-          response.on("error", (err) => reject(err));
+    const request = https.request(
+      {
+        host: "www.goodreads.com",
+        path: `/review/list_rss/${userId}?shelf=${encodeURIComponent(shelf)}`,
+        headers: {
+          Accept: "application/rss+xml, application/xml;q=0.9, */*;q=0.8",
+          "User-Agent":
+            "goodreads-profile-workflow/1.0 (+https://github.com/lancefrench/goodreads-profile-workflow)"
         }
-      )
-      .end();
+      },
+      (response) => {
+        let data = "";
+        response.on("data", (chunk) => (data += chunk));
+        response.on("end", () => {
+          if (response.statusCode < 200 || response.statusCode >= 300) {
+            reject(
+              new Error(
+                `Goodreads RSS request failed with status ${response.statusCode}.`
+              )
+            );
+            return;
+          }
+
+          const parsedData = xmlParser.parse(data);
+          if (!parsedData || !parsedData.rss) {
+            reject(new Error("Goodreads response was not RSS."));
+            return;
+          }
+
+          resolve(parsedData);
+        });
+        response.on("error", (err) => reject(err));
+      }
+    );
+
+    request.on("error", (err) => reject(err));
+    request.end();
   });
 }
 
